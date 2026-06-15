@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -30,7 +31,7 @@ class VideoOptimizerAdvisorApp:
 
         subtitle = ttk.Label(
             main,
-            text="Pick a video file to inspect its characteristics, estimate size, and receive quality-preserving optimization suggestions.",
+            text="Pick a single video file or a folder of clips to inspect characteristics, estimate combined size, and receive quality-preserving optimization suggestions.",
             wraplength=980,
             justify="left",
             font=("Segoe UI", 10),
@@ -44,14 +45,20 @@ class VideoOptimizerAdvisorApp:
         self.path_entry = ttk.Entry(pick_frame, textvariable=self.path_var, width=90)
         self.path_entry.pack(side="left", fill="x", expand=True)
 
-        browse_btn = ttk.Button(pick_frame, text="Browse…", command=self.choose_file)
+        browse_btn = ttk.Button(pick_frame, text="Browse Video…", command=self.choose_file)
         browse_btn.pack(side="left", padx=(8, 0))
+
+        folder_btn = ttk.Button(pick_frame, text="Browse Folder…", command=self.choose_folder)
+        folder_btn.pack(side="left", padx=(8, 0))
 
         button_row = ttk.Frame(main)
         button_row.pack(anchor="w", pady=(0, 10))
 
-        analyze_btn = ttk.Button(button_row, text="Analyze Video", command=self.analyze_video)
-        analyze_btn.pack(side="left")
+        self.analyze_btn = ttk.Button(button_row, text="Analyze Video", command=self.analyze_video)
+        self.analyze_btn.pack(side="left")
+
+        self.analyze_folder_btn = ttk.Button(button_row, text="Analyze Folder", command=self.analyze_folder)
+        self.analyze_folder_btn.pack(side="left", padx=(8, 0))
 
         save_btn = ttk.Button(button_row, text="Save Report", command=self.save_report)
         save_btn.pack(side="left", padx=(8, 0))
@@ -62,6 +69,14 @@ class VideoOptimizerAdvisorApp:
         self.status_var = tk.StringVar(value="Ready. Select a video file to begin.")
         status = ttk.Label(main, textvariable=self.status_var, foreground="#1f5fbf", font=("Segoe UI", 10))
         status.pack(anchor="w", pady=(0, 8))
+
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_label = ttk.Label(main, text="", font=("Segoe UI", 9))
+        self.progress_label.pack(anchor="w", pady=(0, 2))
+        self.progress_bar = ttk.Progressbar(main, variable=self.progress_var, mode="determinate", length=420)
+        self.progress_bar.pack(anchor="w", fill="x", pady=(0, 8))
+        self.progress_bar.pack_forget()
+        self.progress_label.pack_forget()
 
         notebook = ttk.Notebook(main)
         notebook.pack(fill="both", expand=True)
@@ -93,6 +108,7 @@ class VideoOptimizerAdvisorApp:
         self.last_report_text = ""
         self.last_advice_text = ""
         self.last_tools_text = ""
+        self._update_action_buttons("")
 
     def choose_file(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -104,7 +120,22 @@ class VideoOptimizerAdvisorApp:
         )
         if file_path:
             self.path_var.set(file_path)
+            self._update_action_buttons(file_path)
             self.status_var.set("File selected. Click Analyze Video to inspect it.")
+
+    def choose_folder(self) -> None:
+        folder_path = filedialog.askdirectory(title="Choose a folder of videos")
+        if folder_path:
+            self.path_var.set(folder_path)
+            self._update_action_buttons(folder_path)
+            self.status_var.set("Folder selected. Click Analyze Folder for combined recommendations.")
+
+    def _update_action_buttons(self, path_value: str) -> None:
+        is_file = os.path.isfile(path_value)
+        is_folder = os.path.isdir(path_value)
+
+        self.analyze_btn.state(["!disabled"] if is_file else ["disabled"])
+        self.analyze_folder_btn.state(["!disabled"] if is_folder else ["disabled"])
 
     def analyze_video(self) -> None:
         file_path = self.path_var.get().strip()
@@ -122,6 +153,146 @@ class VideoOptimizerAdvisorApp:
             messagebox.showerror("Analysis failed", f"Unable to analyze the video file.\n\n{exc}")
             self.status_var.set("Analysis failed. Please try another file.")
 
+    def analyze_folder(self) -> None:
+        folder_path = self.path_var.get().strip()
+        if not folder_path or not os.path.isdir(folder_path):
+            messagebox.showerror("Missing folder", "Please choose a valid folder containing video files before analyzing it.")
+            return
+
+        try:
+            video_files = self._find_video_files(folder_path)
+            if not video_files:
+                messagebox.showerror("No video files", "No supported video files were found in the selected folder.")
+                return
+
+            self._show_progress(True, len(video_files))
+            self.status_var.set("Analyzing folder of videos…")
+            threading.Thread(target=self._run_folder_analysis, args=(folder_path, video_files), daemon=True).start()
+        except Exception as exc:
+            self._show_progress(False)
+            messagebox.showerror("Folder analysis failed", f"Unable to analyze the folder.\n\n{exc}")
+            self.status_var.set("Folder analysis failed. Please try another folder.")
+
+    def _run_folder_analysis(self, folder_path: str, video_files: list[str]) -> None:
+        try:
+            info = self._collect_folder_info(folder_path, video_files, progress_callback=self._update_progress)
+            self.root.after(0, lambda: self._finish_folder_analysis(folder_path, info, video_files))
+        except Exception as exc:
+            self.root.after(0, lambda: self._handle_folder_error(exc))
+
+    def _show_progress(self, visible: bool, total: int = 0) -> None:
+        if visible:
+            self.progress_bar['maximum'] = max(total, 1)
+            self.progress_var.set(0)
+            self.progress_label.config(text='Scanning videos…')
+            self.progress_bar.pack()
+            self.progress_label.pack()
+        else:
+            self.progress_bar.pack_forget()
+            self.progress_label.pack_forget()
+            self.progress_var.set(0)
+
+    def _update_progress(self, completed: int, file_path: str) -> None:
+        self.root.after(0, lambda: self._apply_progress(completed, file_path))
+
+    def _apply_progress(self, completed: int, file_path: str) -> None:
+        self.progress_var.set(completed)
+        self.progress_label.config(text=f'Processed {completed} of {int(self.progress_bar["maximum"])} files — {os.path.basename(file_path)}')
+        self.root.update_idletasks()
+
+    def _finish_folder_analysis(self, folder_path: str, info: dict, video_files: list[str]) -> None:
+        self._show_progress(False)
+        self._render_folder_report(folder_path, info, video_files)
+        self.status_var.set("Folder analysis complete. Review the combined recommendations below.")
+
+    def _handle_folder_error(self, exc: Exception) -> None:
+        self._show_progress(False)
+        messagebox.showerror("Folder analysis failed", f"Unable to analyze the folder.\n\n{exc}")
+        self.status_var.set("Folder analysis failed. Please try another folder.")
+
+    def _find_video_files(self, folder_path: str) -> list[str]:
+        extensions = (".mp4", ".mkv", ".mov", ".avi", ".wmv", ".webm", ".m4v", ".ts", ".mts", ".mpg", ".mpeg")
+        return [
+            os.path.join(root, file_name)
+            for root, _, files in os.walk(folder_path)
+            for file_name in files
+            if os.path.splitext(file_name)[1].lower() in extensions
+        ]
+
+    def _collect_folder_info(self, folder_path: str, video_files: list[str], progress_callback=None) -> dict:
+        total_bytes = 0
+        total_duration = 0.0
+        total_weighted_fps = 0.0
+        codec_counts = {}
+        resolution_counts = {}
+        max_width = 0
+        max_height = 0
+
+        for index, file_path in enumerate(video_files, start=1):
+            info = self._collect_video_info(file_path)
+            total_bytes += info["file_size_bytes"]
+            total_duration += info["duration"]
+            total_weighted_fps += info["fps"] * info["duration"]
+            codec_counts[info["codec"]] = codec_counts.get(info["codec"], 0) + 1
+            resolution_counts[info["resolution"]] = resolution_counts.get(info["resolution"], 0) + 1
+            max_width = max(max_width, info["width"])
+            max_height = max(max_height, info["height"])
+            if progress_callback is not None:
+                progress_callback(index, file_path)
+
+        avg_fps = (total_weighted_fps / total_duration) if total_duration > 0 else 0.0
+        dominant_resolution = max(resolution_counts, key=resolution_counts.get) if resolution_counts else "Unknown"
+        dominant_codec = max(codec_counts, key=codec_counts.get) if codec_counts else "Unknown"
+
+        return {
+            "folder_path": folder_path,
+            "video_files": video_files,
+            "total_files": len(video_files),
+            "total_size_bytes": total_bytes,
+            "total_size_display": self._format_file_size(total_bytes),
+            "total_duration": total_duration,
+            "avg_fps": avg_fps,
+            "dominant_resolution": dominant_resolution,
+            "dominant_codec": dominant_codec,
+            "max_width": max_width,
+            "max_height": max_height,
+            "recommended_resolution": self._recommended_output_resolution(max_width, max_height),
+            "recommended_codec": self._recommended_output_codec(dominant_codec),
+            "recommended_fps": self._recommended_output_fps(avg_fps),
+            "recommended_preset": self._recommended_preset(total_bytes),
+            "recommended_bitrate": self._recommended_bitrate(max_width, max_height),
+        }
+
+    def _recommended_output_resolution(self, max_width: int, max_height: int) -> str:
+        if max_width >= 3840 or max_height >= 2160:
+            return "1920x1080 (recommended for best size/quality balance)"
+        if max_width >= 1920 or max_height >= 1080:
+            return "1920x1080"
+        if max_width >= 1280 or max_height >= 720:
+            return "1280x720"
+        return f"{max_width}x{max_height}"
+
+    def _recommended_output_codec(self, dominant_codec: str) -> str:
+        return "H.265 / HEVC" if dominant_codec not in ("H264", "AVC1", "H.264") else "H.264 / AVC"
+
+    def _recommended_output_fps(self, avg_fps: float) -> str:
+        if avg_fps >= 55:
+            return "30 fps (best balance for export)"
+        if avg_fps >= 35:
+            return "30 fps"
+        return "Use source frame rate or 24/30 fps"
+
+    def _recommended_preset(self, total_bytes: int) -> str:
+        return "Slow" if total_bytes > 1024 * 1024 * 500 else "Medium"
+
+    def _recommended_bitrate(self, max_width: int, max_height: int) -> str:
+        pixel_count = max_width * max_height
+        if pixel_count >= 3840 * 2160:
+            return "12–18 Mbps for 4K output"
+        if pixel_count >= 1920 * 1080:
+            return "6–10 Mbps for 1080p output"
+        return "3–6 Mbps for 720p output"
+
     def _collect_video_info(self, file_path: str) -> dict:
         ffprobe_path = os.path.join(FFMPEG_BIN, "ffprobe.exe")
         command = [
@@ -133,7 +304,21 @@ class VideoOptimizerAdvisorApp:
         ]
 
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            startup_info = None
+            if hasattr(subprocess, "STARTUPINFO"):
+                startup_info = subprocess.STARTUPINFO()
+                startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startup_info.wShowWindow = subprocess.SW_HIDE
+
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+                creationflags=creation_flags,
+                startupinfo=startup_info,
+            )
             data = json.loads(result.stdout)
             format_info = data.get("format", {})
             streams = data.get("streams", [])
@@ -203,6 +388,69 @@ class VideoOptimizerAdvisorApp:
         if unit_index == 0:
             return f"{int(size)} bytes"
         return f"{size:.2f} {units[unit_index]}"
+
+    def _render_folder_report(self, folder_path: str, info: dict, video_files: list[str]) -> None:
+        lines = [
+            "Folder Analysis Report",
+            "=" * 80,
+            f"Folder: {folder_path}",
+            f"Video files found: {info['total_files']}",
+            f"Total file size: {info['total_size_display']} ({sum(os.path.getsize(path) for path in video_files):,} bytes)",
+            f"Total duration: {info['total_duration']:.2f} seconds",
+            f"Average frame rate: {info['avg_fps']:.2f} fps",
+            f"Dominant resolution: {info['dominant_resolution']}",
+            f"Dominant codec: {info['dominant_codec']}",
+            "",
+            "Recommended combined-output settings for DaVinci Resolve:",
+            f"- Output codec: {info['recommended_codec']}",
+            f"- Output resolution: {info['recommended_resolution']}",
+            f"- Frame rate: {info['recommended_fps']}",
+            f"- Export preset: {info['recommended_preset']}",
+            f"- Suggested bitrate: {info['recommended_bitrate']}",
+            "",
+            "DaVinci Resolve export guidance:",
+            "- Use Delivery > H.264 or H.265 MP4 for a single final file.",
+            "- Enable a quality-focused preset with the suggested bitrate above.",
+            "- Keep the timeline at the highest resolution you truly need; avoid scaling to 4K unless the source is 4K.",
+            "- If your destination is web/mobile, prefer H.264 with 1080p and 30 fps for the best size/quality balance.",
+            "- If the target supports HEVC (H.265) and you want smaller files, use H.265 with the same resolution and a medium/slow preset.",
+        ]
+
+        self.summary_text.delete("1.0", "end")
+        self.summary_text.insert("1.0", "\n".join(lines))
+
+        self.recommend_text.delete("1.0", "end")
+        self.recommend_text.insert("1.0", "\n".join([
+            "Best combined-output settings for the folder:",
+            f"- Recommended codec: {info['recommended_codec']}",
+            f"- Recommended resolution: {info['recommended_resolution']}",
+            f"- Recommended frame rate: {info['recommended_fps']}",
+            f"- Recommended preset: {info['recommended_preset']}",
+            f"- Suggested bitrate: {info['recommended_bitrate']}",
+            "",
+            "DaVinci Resolve notes:",
+            "1. Import the clips into a single timeline.",
+            "2. Use Delivery > H.264/H.265 MP4 and choose a quality-focused preset.",
+            "3. Match the output to your final audience (1080p for general use, 720p for mobile/web use).",
+            "4. Keep audio at 192 kbps AAC for a good size/quality tradeoff.",
+        ]))
+
+        self.tools_text.delete("1.0", "end")
+        self.tools_text.insert("1.0", "\n".join([
+            "Recommended free tools for the combined output:",
+            "1. FFmpeg: Use ffmpeg -i input.mp4 -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k output.mp4",
+            "2. HandBrake: Export to H.264 or H.265 with a medium/slow preset and a quality-based RF/CRF value.",
+            "3. DaVinci Resolve: Use Deliver > H.264/H.265 MP4 and choose a quality-focused preset for the final output.",
+            "",
+            "Quality and size guidance:",
+            "- For the smallest files with modest quality loss, use H.265 and a medium/slow preset.",
+            "- For maximum compatibility, choose H.264 and a medium preset.",
+            "- Keep the final output at 1080p unless the source is truly 4K and you need the extra detail.",
+        ]))
+
+        self.last_report_text = "\n".join(lines)
+        self.last_advice_text = self.recommend_text.get("1.0", "end")
+        self.last_tools_text = self.tools_text.get("1.0", "end")
 
     def _render_report(self, file_path: str, info: dict) -> None:
         size_display = self._format_file_size(info["file_size_bytes"])
@@ -314,6 +562,7 @@ class VideoOptimizerAdvisorApp:
         self.last_report_text = ""
         self.last_advice_text = ""
         self.last_tools_text = ""
+        self._update_action_buttons("")
         self.status_var.set("Reset complete. Choose a new video file to begin.")
 
     def save_report(self) -> None:
