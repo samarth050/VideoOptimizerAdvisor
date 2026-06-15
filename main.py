@@ -47,8 +47,17 @@ class VideoOptimizerAdvisorApp:
         browse_btn = ttk.Button(pick_frame, text="Browse…", command=self.choose_file)
         browse_btn.pack(side="left", padx=(8, 0))
 
-        analyze_btn = ttk.Button(main, text="Analyze Video", command=self.analyze_video)
-        analyze_btn.pack(anchor="w", pady=(0, 10))
+        button_row = ttk.Frame(main)
+        button_row.pack(anchor="w", pady=(0, 10))
+
+        analyze_btn = ttk.Button(button_row, text="Analyze Video", command=self.analyze_video)
+        analyze_btn.pack(side="left")
+
+        save_btn = ttk.Button(button_row, text="Save Report", command=self.save_report)
+        save_btn.pack(side="left", padx=(8, 0))
+
+        reset_btn = ttk.Button(button_row, text="Reset", command=self.reset_view)
+        reset_btn.pack(side="left", padx=(8, 0))
 
         self.status_var = tk.StringVar(value="Ready. Select a video file to begin.")
         status = ttk.Label(main, textvariable=self.status_var, foreground="#1f5fbf", font=("Segoe UI", 10))
@@ -81,6 +90,9 @@ class VideoOptimizerAdvisorApp:
         self.summary_text.insert("1.0", "Select a video file to generate the analysis report.\n")
         self.recommend_text.insert("1.0", "Suggestions will appear here after analysis.\n")
         self.tools_text.insert("1.0", "Recommended free tools and preset settings will appear here after analysis.\n")
+        self.last_report_text = ""
+        self.last_advice_text = ""
+        self.last_tools_text = ""
 
     def choose_file(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -217,14 +229,22 @@ class VideoOptimizerAdvisorApp:
 
         lines.append(self._recommendation_text(info))
 
+        report_text = "\n".join(lines)
+        advice_text = self._recommendation_text(info)
+        tools_text = self._tool_recommendations(info)
+
         self.summary_text.delete("1.0", "end")
-        self.summary_text.insert("1.0", "\n".join(lines))
+        self.summary_text.insert("1.0", report_text)
 
         self.recommend_text.delete("1.0", "end")
-        self.recommend_text.insert("1.0", self._recommendation_text(info))
+        self.recommend_text.insert("1.0", advice_text)
 
         self.tools_text.delete("1.0", "end")
-        self.tools_text.insert("1.0", self._tool_recommendations(info))
+        self.tools_text.insert("1.0", tools_text)
+
+        self.last_report_text = report_text
+        self.last_advice_text = advice_text
+        self.last_tools_text = tools_text
 
     def _interpretation(self, info: dict) -> str:
         notes = []
@@ -282,6 +302,50 @@ class VideoOptimizerAdvisorApp:
             "- Use a medium or slow preset if the file is large and you can wait longer for encoding.",
             "- Scale down only when needed; avoid reducing resolution below 720p unless the destination is small screens.",
         ])
+
+    def reset_view(self) -> None:
+        self.path_var.set("")
+        self.summary_text.delete("1.0", "end")
+        self.recommend_text.delete("1.0", "end")
+        self.tools_text.delete("1.0", "end")
+        self.summary_text.insert("1.0", "Select a video file to generate the analysis report.\n")
+        self.recommend_text.insert("1.0", "Suggestions will appear here after analysis.\n")
+        self.tools_text.insert("1.0", "Recommended free tools and preset settings will appear here after analysis.\n")
+        self.last_report_text = ""
+        self.last_advice_text = ""
+        self.last_tools_text = ""
+        self.status_var.set("Reset complete. Choose a new video file to begin.")
+
+    def save_report(self) -> None:
+        if not getattr(self, "last_report_text", ""):
+            messagebox.showinfo("Nothing to save", "Please analyze a video file before saving the report.")
+            return
+
+        file_path = self.path_var.get().strip()
+        if not file_path or not os.path.exists(file_path):
+            messagebox.showerror("Missing file", "Please choose a valid video file before saving the report.")
+            return
+
+        folder = os.path.dirname(file_path)
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        output_path = os.path.join(folder, f"{base_name}_analysis_report.txt")
+
+        try:
+            with open(output_path, "w", encoding="utf-8") as handle:
+                handle.write("VIDEO ANALYSIS REPORT\n")
+                handle.write("=" * 80 + "\n\n")
+                handle.write(self.last_report_text + "\n\n")
+                handle.write("OPTIMIZATION ADVICE\n")
+                handle.write("=" * 80 + "\n\n")
+                handle.write(self.last_advice_text + "\n\n")
+                handle.write("FREE TOOLS AND SETTINGS\n")
+                handle.write("=" * 80 + "\n\n")
+                handle.write(self.last_tools_text + "\n")
+
+            self.status_var.set(f"Report saved next to the video file: {output_path}")
+            messagebox.showinfo("Report saved", f"The analysis report was saved here:\n\n{output_path}")
+        except Exception as exc:
+            messagebox.showerror("Save failed", f"Unable to save the report.\n\n{exc}")
 
     def _build_ffmpeg_command(self, info: dict) -> str:
         ffmpeg_path = os.path.join(FFMPEG_BIN, "ffmpeg.exe")
