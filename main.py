@@ -293,6 +293,17 @@ class VideoOptimizerAdvisorApp:
             return "6–10 Mbps for 1080p output"
         return "3–6 Mbps for 720p output"
 
+    def _recommended_output_bitrate_kbps(self, width: int, height: int) -> float:
+        pixel_count = width * height
+        if pixel_count >= 3840 * 2160:
+            return 14000.0
+        if pixel_count >= 1920 * 1080:
+            return 8000.0
+        return 4500.0
+
+    def _estimate_converted_size_bytes(self, duration: float, target_bitrate_kbps: float) -> int:
+        return int(duration * target_bitrate_kbps * 1000 / 8)
+
     def _collect_video_info(self, file_path: str) -> dict:
         ffprobe_path = os.path.join(FFMPEG_BIN, "ffprobe.exe")
         command = [
@@ -349,6 +360,8 @@ class VideoOptimizerAdvisorApp:
 
         file_size_mb = file_size_bytes / (1024 * 1024)
         bitrate_kbps = (file_size_bytes * 8) / (duration * 1000) if duration > 0 else 0.0
+        recommended_bitrate_kbps = self._recommended_output_bitrate_kbps(width, height)
+        estimated_converted_size_bytes = self._estimate_converted_size_bytes(duration, recommended_bitrate_kbps)
 
         return {
             "path": file_path,
@@ -363,6 +376,9 @@ class VideoOptimizerAdvisorApp:
             "bitrate_kbps": bitrate_kbps,
             "resolution": f"{width}x{height}",
             "estimated_quality_label": self._quality_label(width, height, fps, bitrate_kbps),
+            "recommended_bitrate_kbps": recommended_bitrate_kbps,
+            "estimated_converted_size_bytes": estimated_converted_size_bytes,
+            "estimated_converted_size_display": self._format_file_size(estimated_converted_size_bytes),
         }
 
     def _fourcc_to_string(self, fourcc: int) -> str:
@@ -462,6 +478,7 @@ class VideoOptimizerAdvisorApp:
             "=" * 80,
             f"File: {file_path}",
             f"File size: {size_display}",
+            f"Estimated converted size: {info['estimated_converted_size_display']} at ~{info['recommended_bitrate_kbps']:.0f} kbps",
             f"Duration: {duration_sec:.2f} seconds ({duration_min:.2f} minutes)",
             f"Resolution: {info['resolution']} ({info['estimated_quality_label']})",
             f"Frame rate: {info['fps']:.2f} fps",
