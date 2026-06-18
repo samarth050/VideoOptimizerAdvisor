@@ -241,8 +241,16 @@ class VideoOptimizerAdvisorApp:
                 progress_callback(index, file_path)
 
         avg_fps = (total_weighted_fps / total_duration) if total_duration > 0 else 0.0
-        dominant_resolution = max(resolution_counts, key=resolution_counts.get) if resolution_counts else "Unknown"
-        dominant_codec = max(codec_counts, key=codec_counts.get) if codec_counts else "Unknown"
+        dominant_resolution = (
+            max(resolution_counts.items(), key=lambda item: item[1])[0]
+            if resolution_counts
+            else "Unknown"
+        )
+        dominant_codec = (
+            max(codec_counts.items(), key=lambda item: item[1])[0]
+            if codec_counts
+            else "Unknown"
+        )
 
         return {
             "folder_path": folder_path,
@@ -405,6 +413,20 @@ class VideoOptimizerAdvisorApp:
             return f"{int(size)} bytes"
         return f"{size:.2f} {units[unit_index]}"
 
+    def _format_duration(self, seconds: float) -> str:
+        total_seconds = int(round(seconds))
+        minutes, sec = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        days, hours = divmod(hours, 24)
+        parts = []
+        if days:
+            parts.append(f"{days} day{'s' if days != 1 else ''}")
+        if hours:
+            parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+        if minutes or not parts:
+            parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+        return " ".join(parts)
+
     def _render_folder_report(self, folder_path: str, info: dict, video_files: list[str]) -> None:
         lines = [
             "Folder Analysis Report",
@@ -470,8 +492,8 @@ class VideoOptimizerAdvisorApp:
 
     def _render_report(self, file_path: str, info: dict) -> None:
         size_display = self._format_file_size(info["file_size_bytes"])
-        duration_min = info["duration"] / 60
         duration_sec = info["duration"]
+        duration_display = self._format_duration(duration_sec)
 
         lines = [
             "Video Analysis Report",
@@ -479,7 +501,7 @@ class VideoOptimizerAdvisorApp:
             f"File: {file_path}",
             f"File size: {size_display}",
             f"Estimated converted size: {info['estimated_converted_size_display']} at ~{info['recommended_bitrate_kbps']:.0f} kbps",
-            f"Duration: {duration_sec:.2f} seconds ({duration_min:.2f} minutes)",
+            f"Duration: {duration_sec:.2f} seconds ({duration_display})",
             f"Resolution: {info['resolution']} ({info['estimated_quality_label']})",
             f"Frame rate: {info['fps']:.2f} fps",
             f"Frames: {info['frame_count']:,}",
